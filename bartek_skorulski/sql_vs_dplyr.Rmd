@@ -1,0 +1,362 @@
+---
+title: "SQL vs. dbplyr"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+## Getting data
+
+Download data `database.sqlite.zip` from  <https://www.kaggle.com/hugomathien/soccer> into directory 
+`football_data` and uznip it.
+
+## Access to data base
+
+```{r}
+DATA_DIR <- file.path("..", "football_data")
+library(RSQLite)
+sql_con <- dbConnect(
+  SQLite(), 
+  dbname=file.path(DATA_DIR, "database.sqlite")
+)
+dbListTables(sql_con)
+```
+
+Example of query:
+```{r}
+dbGetQuery(sql_con, "
+SELECT *
+FROM Player
+LIMIT 6
+")
+```
+
+sql chunk:
+```{sql, connection=sql_con}
+SELECT *
+FROM Player_Attributes
+LIMIT 6
+```
+
+## dplyr 
+
+We will show how to work with dplyr with remote storage. This will connect data base with dplyr.
+```{r, results=FALSE, echo=FALSE}
+library('dplyr')
+player_db <- tbl(sql_con, "Player")
+player_attributes_db <- tbl(sql_con, "Player_Attributes")
+match_db <- tbl(sql_con, "Match")
+```
+
+### Pipes
+
+First let us introduce pipes.
+```{r}
+print("Hello world!")
+"Hello world!" %>%
+  print
+```
+
+```{r}
+2 + 3 %>%
+  print
+
+3 %>%
+  {2 + .} %>%
+  print
+```
+
+## Show query
+
+```{r}
+player_db %>%
+  mutate(year=as.numeric(strftime('%Y', birthday))) %>%
+  group_by(year) %>%
+  summarise(height=mean(height, na.rm=TRUE)) %>%
+  show_query
+```
+
+
+## SELECT ~ select
+
+```{r}
+"SELECT player_name
+,   birthday
+FROM Player
+LIMIT 10" %>%
+  dbGetQuery(sql_con, .)
+```
+
+```{r}
+player_db %>%
+  select(player_name, birthday) %>%
+  head(10)
+```
+
+## WHERE ~ filter
+
+```{sql where_sql, connection=sql_con}
+SELECT *
+FROM Player
+WHERE birthday >= '1998'
+LIMIT 5
+```
+
+```{r}
+player_db %>%
+  filter(birthday >= '1998') %>%
+  head(5)
+```
+
+## ORDER ~ arrange
+
+```{r}
+player_db %>%
+  arrange(birthday) %>%
+  head(5)
+```
+
+```{r}
+"SELECT *
+FROM Player
+ORDER BY birthday 
+LIMIT 5" %>%
+  dbGetQuery(sql_con, .)
+```
+
+```{r}
+player_db %>%
+  arrange(desc(birthday)) %>%
+  head(5)
+```
+
+```{r}
+"SELECT *
+FROM Player
+ORDER BY birthday DESC
+LIMIT 5" %>%
+  dbGetQuery(sql_con, .)
+```
+## AS ~ mutate
+
+```{r}
+player_db %>%
+  mutate(weight_kg = weight*0.45359237) %>%
+  head(3) %>%
+  data.frame
+```
+
+```{r}
+"SELECT *
+,   weight*0.45359237 AS weight_kg
+FROM Player
+LIMIT 3" %>%
+  dbGetQuery(sql_con, .)
+```
+
+## aggregators ~ summarise
+
+```{r}
+player_db %>%
+  summarise(
+    mean_weight=mean(weight, na.rm=TRUE),
+    sd_weight=sd(weight, na.rm=TRUE),
+    sum_weight=sum(weight, na.rm=TRUE),
+    n_samples=n())
+```
+
+```{r}
+"SELECT AVG(weight) AS mean_weight
+,   STDEV(weight) AS sd_weight
+,   SUM(weight) AS sum_weight
+,   COUNT(1) AS n_samples
+FROM Player
+" %>%
+  dbGetQuery(sql_con, .)
+```
+
+## GROUP BY ~ group_by
+
+Here we use SQLite date functions
+<https://www.sqlite.org/lang_datefunc.html>
+
+```{r}
+library('ggplot2')
+"SELECT CAST(STRFTIME('%Y', birthday) AS INT) AS year
+,   AVG(height) AS height
+FROM Player
+GROUP BY CAST(SUBSTR(birthday, 1, 4) AS INT) " %>%
+  dbGetQuery(sql_con, .) %>%
+  ggplot(., aes(year, height)) +
+  geom_line(colour="darkorange") +
+  theme_minimal()
+```
+
+```{r}
+player_db %>%
+  mutate(year=as.numeric(strftime('%Y', birthday))) %>%
+  group_by(year) %>%
+  summarise(height=mean(height, na.rm=TRUE)) %>%
+  data.frame %>%
+  ggplot(aes(year, height)) +
+  geom_line(colour="darkorange") +
+  theme_minimal()
+```
+
+
+
+## Joins
+
+```{sql connection=sql_con}
+SELECT Player.player_name
+, pa.max_rating 
+FROM Player
+LEFT JOIN (
+  SELECT player_api_id
+  ,  MAX(overall_rating) AS max_rating
+  FROM Player_Attributes
+  GROUP BY player_api_id) pa
+ON Player.player_api_id = pa.player_api_id
+ORDER BY pa.max_rating DESC
+LIMIT 10
+```
+...
+
+```{r}
+player_db <- tbl(sql_con, "Player")
+player_attributes_db <- tbl(sql_con, "Player_Attributes")
+
+player_db %>%
+  left_join(
+    {player_attributes_db %>% 
+      group_by(player_api_id) %>%
+      summarise(max_rating=max(overall_rating, na.rm=TRUE))}, 
+    by='player_api_id') %>%
+  arrange(-max_rating) %>%
+  select(player_name, max_rating) %>%
+  head(10)
+```
+
+## UNION All ~ union_all
+
+```{sql, connection=sql_con}
+SELECT team_api_id
+,   SUM(goal) AS goals
+FROM (
+    SELECT home_team_api_id AS team_api_id
+    ,   home_team_goal AS goal
+    FROM Match
+    WHERE country_id = 1
+    AND league_id = 1    
+    AND season = '2008/2009'
+    UNION ALL 
+    SELECT away_team_api_id AS team_api_id
+    ,   away_team_goal AS goal
+    FROM Match
+    WHERE country_id = 1
+    AND league_id = 1    
+    AND season = '2008/2009')
+GROUP BY 1
+ORDER BY 2 DESC
+```
+
+```{r}
+union_all(
+{match_db %>%
+  filter(country_id == 1, league_id == 1, season == '2008/2009') %>%
+  select(team_api_id = home_team_api_id, team_goal = home_team_goal)},
+{match_db %>%
+  filter(country_id == 1, league_id == 1, season == '2008/2009') %>%
+  select(team_api_id = away_team_api_id, team_goal = away_team_goal)}) %>%
+  group_by(team_api_id) %>%
+  summarise(goals=sum(team_goal, na.rm=TRUE)) %>%
+  arrange(desc(goals))
+```
+
+
+=======
+
+Exercise
+
+* Translate from SQL to R (with dplyr) or from R to SQL
+```{r}
+"SELECT COUNT(1) AS n
+FROM Match" %>%
+  dbGetQuery(sql_con, .)
+```
+
+
+```{r}
+"SELECT country_id
+,   COUNT(1) AS n
+FROM Match
+GROUP BY country_id
+ORDER BY n DESC" %>%
+  dbGetQuery(sql_con, .)
+```
+
+```{r}
+match_db <- tbl_df(dbGetQuery(sql_con,"SELECT * FROM Match"))
+country_db <- tbl_df(dbGetQuery(sql_con,"SELECT * FROM Country"))
+teams <- tbl_df(dbGetQuery(sql_con,"SELECT * FROM Team"))
+```
+
+
+```{r}
+match_db %>%
+  left_join(country_db, by=c("country_id" = "id")) %>%
+  select(name, country_id, home_team_api_id) %>%
+  group_by(name) %>%
+  summarise(teams = n_distinct(home_team_api_id)) %>%
+  arrange(desc(teams))
+```
+
+* List 5 players and their highest rating that had the lowest potential ever.
+
+* Which team has the higest average of goles when playing home in season 2008/2009 in Poland?
+
+* Which team and from which country and which season scored the higest number of goals?
+
+## Whisker
+
+<https://github.com/edwindj/whisker>
+
+```{r}
+library(whisker)
+template <- "
+Hello,
+My name is {{{name}}} and I like {{{thing_i_like}}}.
+"
+
+data <- list( 
+  name="Bartek", 
+  thing_i_like="tenis")
+
+text <- whisker.render(template, data)
+cat(text)
+```
+
+```{r}
+template <- "
+SELECT *
+FROM Player
+WHERE player_name = '{{{player_name}}}'
+"
+
+data <- list( 
+  player_name="Cristiano Ronaldo")
+
+query<- whisker.render(template, data)
+
+dbGetQuery(sql_con, query)
+
+ 
+```
+
+## Close connection
+
+```{r}
+dbDisconnect(sql_con)
+```
+
+https://db.rstudio.com/dplyr/
