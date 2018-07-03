@@ -86,6 +86,23 @@ FROM Player
 LIMIT 10" %>%
   dbGetQuery(sql_con, .)
 ```
+### New query
+```{r}
+player_db %>%
+  select (player_name,birthday) %>%
+  filter(player_name > 'Cris') %>%
+  head(10)
+```
+### New query
+```{r}
+player_db %>%
+  select (player_name,birthday) %>%
+  filter(player_name>'D' & player_name<'F') %>%
+  #data.frame %>%
+  head(100)
+```
+
+
 
 ```{r}
 player_db %>%
@@ -202,9 +219,6 @@ player_db %>%
   geom_line(colour="darkorange") +
   theme_minimal()
 ```
-
-
-
 ## Joins
 
 ```{sql connection=sql_con}
@@ -284,7 +298,10 @@ Exercise
 FROM Match" %>%
   dbGetQuery(sql_con, .)
 ```
-
+```{r}
+match_db %>%
+  nrow()
+```
 
 ```{r}
 "SELECT country_id
@@ -294,6 +311,18 @@ GROUP BY country_id
 ORDER BY n DESC" %>%
   dbGetQuery(sql_con, .)
 ```
+```{r}
+match_db %>%
+  select(country_id) %>%
+  table() %>%
+  sort()
+```
+```{r}
+match_db %>% 
+  group_by(country_id) %>% 
+  summarise(n = n())
+```
+
 
 ```{r}
 match_db <- tbl_df(dbGetQuery(sql_con,"SELECT * FROM Match"))
@@ -311,9 +340,40 @@ match_db %>%
   arrange(desc(teams))
 ```
 
-* List 5 players and their highest rating that had the lowest potential ever.
+# List best ranking of 5 players with lowest ranking ever
+```{r}
+player_db %>%
+  left_join(
+    {player_attributes_db %>% 
+      group_by(player_api_id) %>%
+      summarise(max_rating=max(overall_rating,na.rm=TRUE),min_rating=min(overall_rating, na.rm=TRUE))}, 
+    by='player_api_id') %>%
+  arrange(min_rating,max_rating) %>%
+  select(player_name, min_rating,max_rating) %>%
+  head(10)
+```
 
-* Which team has the higest average of goles when playing home in season 2008/2009 in Poland?
+# Which team has the higest average of goals when playing home in season 2008/2009 in Poland?
+```{r}
+teams %>%
+  summarise(n=n())
+```
+```{r}
+country_db %>%
+  select(id,name) %>%
+  filter(name=='Poland')
+```
+
+```{r}
+match_db %>%
+    select(home_team_api_id,season,home_team_goal,country_id) %>%
+    filter(season=='2008/2009' & country_id==15722) %>%
+    group_by(home_team_api_id) %>%
+    summarise(goals=mean(home_team_goal,na.rm=TRUE)) %>%
+    arrange(-goals) %>%
+  head(100)
+```
+
 
 * Which team and from which country and which season scored the higest number of goals?
 
